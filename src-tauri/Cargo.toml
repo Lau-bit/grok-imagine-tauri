@@ -1,0 +1,26 @@
+[package]
+name = "grok-imagine-tauri"
+version = "1.0.4"
+description = "Standalone image generation using xAI Grok Imagine, ported to Tauri"
+authors = ["slaur"]
+edition = "2021"
+
+[lib]
+name = "grok_imagine_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tokio = { version = "1", features = ["macros", "sync"] }
+uuid = { version = "1", features = ["v4"] }
+windows-sys = { version = "0.61", features = ["Win32_Graphics_Dwm"] }
+winreg = "0.55"

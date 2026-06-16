@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>Grok Imagine</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body spellcheck="false">
+
+  <div class="viewer-drag-strip" data-tauri-drag-region aria-hidden="true"></div>
+
+  <div class="titlebar" id="titlebar" data-tauri-drag-region>
+    <div class="titlebar-left">
+      <img class="titlebar-icon" src="./assets/app-icon.png" alt="" aria-hidden="true">
+      <span class="titlebar-title">Grok Imagine</span>
+      <button class="sync-btn" id="btn-sync" aria-label="Sync gallery data" title="Sync gallery data">&#8635;</button>
+      <button class="settings-btn" id="settings-btn" aria-label="Settings" title="Settings">&#9881;</button>
+    </div>
+    <div class="titlebar-controls">
+      <button class="titlebar-btn" id="btn-minimize" title="Minimize">&#8212;</button>
+      <button class="titlebar-btn" id="btn-maximize" title="Maximize">&#9633;</button>
+      <button class="titlebar-btn close" id="btn-close" title="Close">&#10005;</button>
+    </div>
+  </div>
+
+  <div class="settings-menu hidden" id="settings-menu">
+    <div class="settings-menu-title">Theme</div>
+    <label class="theme-option">
+      <input type="radio" name="theme" value="dark-gray" checked>
+      <span>Dark gray</span>
+    </label>
+    <label class="theme-option">
+      <input type="radio" name="theme" value="classic">
+      <span>Classic blue</span>
+    </label>
+    <div class="settings-menu-title settings-menu-title-spaced">Viewer</div>
+    <label class="theme-option">
+      <input type="checkbox" id="persistent-hide-ui">
+      <span>Persistent hide UI</span>
+    </label>
+    <label class="theme-option">
+      <input type="checkbox" id="auto-open-last-fill-view">
+      <span>Open last image in fill view on startup</span>
+    </label>
+    <div class="settings-menu-title settings-menu-title-spaced">Window</div>
+    <label class="theme-option">
+      <input type="checkbox" id="remember-window-position">
+      <span>Remember last app size and location</span>
+    </label>
+    <label class="theme-option">
+      <input type="checkbox" id="square-app-corners">
+      <span>Square app corners</span>
+    </label>
+    <label class="theme-option">
+      <input type="checkbox" id="expand-borderless-edges">
+      <span>Expand borderless edges by 2px</span>
+    </label>
+    <div class="settings-menu-title settings-menu-title-spaced">API key</div>
+    <div class="api-key-row" data-provider="xai">
+      <div class="api-key-main">
+        <span class="api-key-name">xAI</span>
+        <span class="api-key-status" id="xai-key-status">Not set</span>
+      </div>
+      <div class="api-key-controls">
+        <input type="password" id="xai-key-input" placeholder="API key" autocomplete="off" spellcheck="false">
+        <button class="api-key-save" data-provider="xai">Save</button>
+        <button class="api-key-remove" data-provider="xai">Remove</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="prompt-section">
+    <textarea id="prompt" placeholder="Describe the image you want to generate…" spellcheck="false"></textarea>
+    <div class="controls-row">
+      <label class="control-label" for="count">Images</label>
+      <select id="count">
+        <option value="1" selected>1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+      </select>
+      <span id="status" class="status"></span>
+      <div class="btn-group">
+        <button id="btn-generate" class="btn-primary">Generate</button>
+        <button id="btn-cancel" class="btn-secondary hidden">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab active" id="tab-current">Current</button>
+    <button class="tab" id="tab-display-gallery">Display <span id="display-gallery-badge" class="tab-badge hidden">0</span></button>
+    <button class="tab" id="tab-gallery">Gallery <span id="gallery-badge" class="tab-badge hidden">0</span></button>
+  </div>
+
+  <!-- Current batch view -->
+  <div class="tab-content" id="view-current">
+    <div class="current-empty" id="current-empty">
+      <div class="empty-icon">✦</div>
+      <p>Generated images will appear here</p>
+      <p class="empty-hint">Ctrl+Enter to generate</p>
+    </div>
+    <div class="current-display hidden" id="current-display"></div>
+  </div>
+
+  <!-- Gallery view -->
+  <div class="tab-content hidden" id="view-gallery">
+    <div class="gallery-header">
+      <span class="gallery-label">All generated images</span>
+      <button id="btn-archive" class="btn-ghost hidden">Archive all</button>
+    </div>
+    <div class="gallery" id="gallery">
+      <div class="gallery-empty" id="gallery-empty">
+        <div class="empty-icon">✦</div>
+        <p>Your generated images will be saved here</p>
+      </div>
+    </div>
+    <div id="gallery-sentinel" aria-hidden="true"></div>
+  </div>
+
+  <!-- Display gallery view -->
+  <div class="tab-content hidden" id="view-display-gallery">
+    <div class="gallery-header">
+      <span class="gallery-label">Display gallery</span>
+      <button id="btn-archive-display" class="btn-ghost hidden">Archive all</button>
+    </div>
+    <div class="gallery" id="display-gallery">
+      <div class="gallery-empty" id="display-gallery-empty">
+        <div class="empty-icon">✦</div>
+        <p>Saved display images will appear here</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lightbox -->
+  <div class="lightbox hidden" id="lightbox">
+    <button class="lightbox-close" id="lightbox-close">&#10005;</button>
+    <button class="lightbox-nav lightbox-prev hidden" id="lightbox-prev" aria-label="Previous image">&lt;</button>
+    <img id="lightbox-img" src="" alt="">
+    <button class="lightbox-nav lightbox-next hidden" id="lightbox-next" aria-label="Next image">&gt;</button>
+    <div class="lightbox-actions">
+      <button id="lightbox-display-save" class="btn-secondary">Save to display gallery</button>
+      <button id="lightbox-save" class="btn-secondary">Save to file</button>
+      <button id="lightbox-copy" class="btn-secondary">Copy to clipboard</button>
+      <button id="lightbox-fill" class="btn-secondary">Fill view</button>
+    </div>
+  </div>
+
+  <div class="fill-view hidden" id="fill-view">
+    <button class="fill-close" id="fill-close" aria-label="Exit fill view">&#10005;</button>
+    <img id="fill-img" src="" alt="">
+  </div>
+
+  <div class="api-warning hidden" id="api-warning">
+    &#9888; API key not configured - add it in Settings.
+  </div>
+
+  <div class="confirm-backdrop hidden" id="archive-confirm" role="dialog" aria-modal="true" aria-labelledby="archive-confirm-title">
+    <div class="confirm-dialog">
+      <div class="confirm-title" id="archive-confirm-title">Archive gallery?</div>
+      <p class="confirm-copy" id="archive-confirm-copy"></p>
+      <div class="confirm-actions">
+        <button id="archive-cancel" class="btn-secondary">Cancel</button>
+        <button id="archive-confirm-btn" class="btn-primary">Archive and clear</button>
+      </div>
+    </div>
+  </div>
+
+  <button id="viewer-toggle" class="viewer-toggle" aria-label="Toggle viewer mode"></button>
+
+  <script src="api.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
