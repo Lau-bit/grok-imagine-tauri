@@ -1334,18 +1334,26 @@ function clampFillPan() {
   return coverScale;
 }
 
-function applyFillViewTransform() {
+function applyFillViewTransform(animate = false) {
   const coverScale = clampFillPan();
+  if (animate) {
+    fillImg.style.transition = 'transform 0.3s ease-out';
+    fillImg.addEventListener('transitionend', () => {
+      fillImg.style.transition = '';
+    }, { once: true });
+  } else {
+    fillImg.style.transition = '';
+  }
   fillImg.style.setProperty('--scale', (coverScale * fillTransform.zoom).toFixed(4));
   fillImg.style.setProperty('--pan-x', `${fillTransform.panX.toFixed(1)}px`);
   fillImg.style.setProperty('--pan-y', `${fillTransform.panY.toFixed(1)}px`);
 }
 
-function resetFillViewTransform() {
+function resetFillViewTransform(animate = false) {
   fillTransform.zoom = 1;
   fillTransform.panX = 0;
   fillTransform.panY = 0;
-  applyFillViewTransform();
+  applyFillViewTransform(animate);
 }
 
 function zoomFillViewAt(clientX, clientY, deltaY, mode = 'normal') {
@@ -1521,7 +1529,7 @@ document.addEventListener('keydown', e => {
 
   if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'c' && !fillView.classList.contains('hidden')) {
     e.preventDefault();
-    resetFillViewTransform();
+    resetFillViewTransform(true);
     return;
   }
 
