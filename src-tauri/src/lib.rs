@@ -19,9 +19,41 @@ use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 #[cfg(target_os = "windows")]
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
-const API_BASE: &str = "https://api.x.ai/v1";
-const IMAGE_MODEL: &str = "grok-imagine-image";
+const XAI_API_BASE: &str = "https://api.x.ai/v1";
+const XAI_IMAGE_MODEL: &str = "grok-imagine-image";
+const GEMINI_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
+const GEMINI_IMAGE_MODEL: &str = "gemini-2.5-flash-image";
+const BFL_API_BASE: &str = "https://api.bfl.ai/v1";
+const BFL_FLUX_PRO_PATH: &str = "flux-pro-1.1";
+const BFL_KONTEXT_PATH: &str = "flux-kontext-pro";
+const BFL_POLL_INTERVAL_MS: u64 = 1500;
+const BFL_MAX_POLLS: u32 = 120; // ~3 min ceiling, matching IMAGE_TIMEOUT_SECS
 const IMAGE_TIMEOUT_SECS: u64 = 180;
+
+// Providers whose API keys are stored/managed in Settings: (id, label, env var name).
+// Generation providers map onto these (both FLUX models share the one BFL key).
+const KEY_PROVIDERS: &[(&str, &str, &str)] = &[
+    ("xai", "xAI", "XAI_API_KEY"),
+    ("google", "Google (Gemini)", "GOOGLE_API_KEY"),
+    ("bfl", "Black Forest Labs", "BFL_API_KEY"),
+];
+
+fn key_provider_env(provider_id: &str) -> Option<&'static str> {
+    KEY_PROVIDERS
+        .iter()
+        .find(|(id, _, _)| *id == provider_id)
+        .map(|(_, _, env)| *env)
+}
+
+// Maps a generation provider (chosen per-request in the UI) to the env var that holds its key.
+fn generation_key_env(provider: &str) -> Option<&'static str> {
+    match provider {
+        "xai" => Some("XAI_API_KEY"),
+        "google" => Some("GOOGLE_API_KEY"),
+        "flux-pro" | "flux-kontext" => Some("BFL_API_KEY"),
+        _ => None,
+    }
+}
 const INDEX_LOCK_TIMEOUT_MS: u128 = 10_000;
 const STALE_INDEX_LOCK_MS: u128 = 120_000;
 const SETTINGS_FILE: &str = "settings.json";
@@ -107,6 +139,11 @@ struct GalleryEntry {
 struct GenerateArgs {
     prompt: String,
     n: Option<u8>,
+    #[serde(default)]
+    provider: Option<String>,
+    // Source image for edit models (FLUX.1 Kontext). Same shape as other image payloads.
+    #[serde(default)]
+    input_image: Option<ImagePayload>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,6 +194,55 @@ struct XaiImage {
 #[derive(Debug, Deserialize)]
 struct XaiImageResponse {
     data: Option<Vec<XaiImage>>,
+}
+
+// ── Gemini (Nano Banana) response shape ──
+#[derive(Debug, Deserialize)]
+struct GeminiInlineData {
+    data: String,
+    #[serde(rename = "mimeType")]
+    mime_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiPart {
+    #[serde(rename = "inlineData")]
+    inline_data: Option<GeminiInlineData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiContent {
+    #[serde(default)]
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiCandidate {
+    content: Option<GeminiContent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiResponse {
+    #[serde(default)]
+    candidates: Vec<GeminiCandidate>,
+}
+
+// ── Black Forest Labs (FLUX) async job shape ──
+#[derive(Debug, Deserialize)]
+struct BflCreateResponse {
+    id: Option<String>,
+    polling_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BflResultInner {
+    sample: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BflPollResponse {
+    status: String,
+    result: Option<BflResultInner>,
 }
 
 struct AppPaths {
@@ -262,13 +348,14 @@ fn source_key_from_bytes(bytes: &[u8]) -> String {
 }
 
 fn data_url_to_bytes(data_url: &str) -> Result<Vec<u8>, String> {
-    let prefix = "data:image/png;base64,";
+    // Accept any `data:<mime>;base64,` prefix (xAI/BFL are PNG, Gemini may vary).
     let encoded = data_url
-        .strip_prefix(prefix)
-        .ok_or_else(|| "Invalid PNG image data.".to_string())?;
+        .split_once("base64,")
+        .map(|(_, encoded)| encoded)
+        .ok_or_else(|| "Invalid image data.".to_string())?;
     general_purpose::STANDARD
         .decode(encoded)
-        .map_err(|error| format!("Invalid PNG image data: {error}"))
+        .map_err(|error| format!("Invalid image data: {error}"))
 }
 
 fn bytes_to_data_url(bytes: &[u8]) -> String {
@@ -669,35 +756,27 @@ fn credential_delete(_key_name: &str) -> Result<(), String> {
     Err("Credential Manager storage is only available on Windows.".to_string())
 }
 
-fn configured_api_key() -> Option<String> {
-    if let Some(key) = credential_read("XAI_API_KEY") {
-        std::env::set_var("XAI_API_KEY", &key);
+fn configured_api_key_for(env_name: &str) -> Option<String> {
+    if let Some(key) = credential_read(env_name) {
+        std::env::set_var(env_name, &key);
         return Some(key);
     }
 
-    if let Ok(key) = std::env::var("XAI_API_KEY") {
+    if let Ok(key) = std::env::var(env_name) {
         if valid_api_key(&key) {
             return Some(key);
         }
     }
 
-    let key = windows_user_env("XAI_API_KEY")?;
-    std::env::set_var("XAI_API_KEY", &key);
+    let key = windows_user_env(env_name)?;
+    std::env::set_var(env_name, &key);
     Some(key)
 }
 
-#[tauri::command]
-fn check_api_key() -> bool {
-    configured_api_key().is_some()
-}
-
-#[tauri::command]
-fn api_key_status() -> Result<Value, String> {
-    let credential_key = credential_read("XAI_API_KEY");
-    let env_key = std::env::var("XAI_API_KEY")
-        .ok()
-        .filter(|key| valid_api_key(key));
-    let user_env_key = windows_user_env("XAI_API_KEY");
+fn provider_status(id: &str, label: &str, env_name: &str) -> Value {
+    let credential_key = credential_read(env_name);
+    let env_key = std::env::var(env_name).ok().filter(|key| valid_api_key(key));
+    let user_env_key = windows_user_env(env_name);
     let active_key = credential_key
         .as_ref()
         .or(env_key.as_ref())
@@ -712,41 +791,54 @@ fn api_key_status() -> Result<Value, String> {
         "Not set"
     };
 
-    Ok(json!([{
-        "id": "xai",
-        "label": "xAI",
+    json!({
+        "id": id,
+        "label": label,
         "configured": active_key.is_some(),
         "savedInCredentialManager": credential_key.is_some(),
         "source": source,
         "last4": active_key.map(|key| masked_key_tail(key)).unwrap_or_default(),
-    }]))
+    })
+}
+
+#[tauri::command]
+fn check_api_key() -> bool {
+    KEY_PROVIDERS
+        .iter()
+        .any(|(_, _, env)| configured_api_key_for(env).is_some())
+}
+
+#[tauri::command]
+fn api_key_status() -> Result<Value, String> {
+    Ok(Value::Array(
+        KEY_PROVIDERS
+            .iter()
+            .map(|(id, label, env)| provider_status(id, label, env))
+            .collect(),
+    ))
 }
 
 #[tauri::command]
 fn api_key_save(provider_id: String, key: String) -> Result<Value, String> {
-    if provider_id != "xai" {
-        return Err("Unknown API provider.".to_string());
-    }
+    let env_name = key_provider_env(&provider_id).ok_or("Unknown API provider.")?;
     if !valid_api_key(&key) {
         return Err("Enter a valid API key.".to_string());
     }
 
-    credential_write("XAI_API_KEY", key.trim())?;
-    std::env::set_var("XAI_API_KEY", key.trim());
+    credential_write(env_name, key.trim())?;
+    std::env::set_var(env_name, key.trim());
     api_key_status()
 }
 
 #[tauri::command]
 fn api_key_delete(provider_id: String) -> Result<Value, String> {
-    if provider_id != "xai" {
-        return Err("Unknown API provider.".to_string());
-    }
+    let env_name = key_provider_env(&provider_id).ok_or("Unknown API provider.")?;
 
-    let saved_key = credential_read("XAI_API_KEY");
-    credential_delete("XAI_API_KEY")?;
-    if let (Some(saved), Ok(current)) = (saved_key, std::env::var("XAI_API_KEY")) {
+    let saved_key = credential_read(env_name);
+    credential_delete(env_name)?;
+    if let (Some(saved), Ok(current)) = (saved_key, std::env::var(env_name)) {
         if current.trim() == saved.trim() {
-            std::env::remove_var("XAI_API_KEY");
+            std::env::remove_var(env_name);
         }
     }
     api_key_status()
@@ -757,17 +849,175 @@ fn is_primary_instance() -> bool {
     true
 }
 
+// Each provider returns a list of `data:<mime>;base64,…` image URLs.
+async fn xai_generate(
+    client: &reqwest::Client,
+    api_key: &str,
+    prompt: &str,
+    n: u8,
+) -> Result<Vec<String>, String> {
+    let response = client
+        .post(format!("{XAI_API_BASE}/images/generations"))
+        .bearer_auth(api_key)
+        .json(&json!({
+            "model": XAI_IMAGE_MODEL,
+            "prompt": prompt,
+            "n": n,
+            "response_format": "b64_json"
+        }))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("API error {status}: {body}"));
+    }
+    let data = response
+        .json::<XaiImageResponse>()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(data
+        .data
+        .unwrap_or_default()
+        .into_iter()
+        .map(|image| format!("data:image/png;base64,{}", image.b64_json))
+        .collect())
+}
+
+async fn gemini_generate(
+    client: &reqwest::Client,
+    api_key: &str,
+    prompt: &str,
+) -> Result<Vec<String>, String> {
+    let response = client
+        .post(format!(
+            "{GEMINI_API_BASE}/models/{GEMINI_IMAGE_MODEL}:generateContent"
+        ))
+        .header("x-goog-api-key", api_key)
+        .json(&json!({ "contents": [{ "parts": [{ "text": prompt }] }] }))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("API error {status}: {body}"));
+    }
+    let data = response
+        .json::<GeminiResponse>()
+        .await
+        .map_err(|error| error.to_string())?;
+    let images = data
+        .candidates
+        .into_iter()
+        .filter_map(|candidate| candidate.content)
+        .flat_map(|content| content.parts)
+        .filter_map(|part| part.inline_data)
+        .map(|inline| {
+            let mime = inline.mime_type.unwrap_or_else(|| "image/png".to_string());
+            format!("data:{mime};base64,{}", inline.data)
+        })
+        .collect::<Vec<_>>();
+    if images.is_empty() {
+        return Err("Gemini returned no image (the prompt may have been blocked).".into());
+    }
+    Ok(images)
+}
+
+async fn bfl_generate(
+    client: &reqwest::Client,
+    api_key: &str,
+    path: &str,
+    body: Value,
+) -> Result<Vec<String>, String> {
+    let create = client
+        .post(format!("{BFL_API_BASE}/{path}"))
+        .header("x-key", api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !create.status().is_success() {
+        let status = create.status();
+        let text = create.text().await.unwrap_or_default();
+        return Err(format!("API error {status}: {text}"));
+    }
+    let created = create
+        .json::<BflCreateResponse>()
+        .await
+        .map_err(|error| error.to_string())?;
+    let polling_url = created
+        .polling_url
+        .or_else(|| {
+            created
+                .id
+                .map(|id| format!("{BFL_API_BASE}/get_result?id={id}"))
+        })
+        .ok_or_else(|| "Black Forest Labs did not return a job URL.".to_string())?;
+
+    for _ in 0..BFL_MAX_POLLS {
+        tokio::time::sleep(Duration::from_millis(BFL_POLL_INTERVAL_MS)).await;
+        let poll = client
+            .get(&polling_url)
+            .header("x-key", api_key)
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        if !poll.status().is_success() {
+            let status = poll.status();
+            let text = poll.text().await.unwrap_or_default();
+            return Err(format!("API error {status}: {text}"));
+        }
+        let update = poll
+            .json::<BflPollResponse>()
+            .await
+            .map_err(|error| error.to_string())?;
+        match update.status.as_str() {
+            "Ready" => {
+                let url = update
+                    .result
+                    .and_then(|result| result.sample)
+                    .ok_or_else(|| "Black Forest Labs result was missing an image.".to_string())?;
+                let bytes = client
+                    .get(&url)
+                    .send()
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .bytes()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                return Ok(vec![bytes_to_data_url(&bytes)]);
+            }
+            "Pending" => continue,
+            other => return Err(format!("Black Forest Labs job failed: {other}")),
+        }
+    }
+    Err("Timed out waiting for the Black Forest Labs result.".into())
+}
+
 #[tauri::command]
 async fn generate_image(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
     args: GenerateArgs,
 ) -> Result<GenerateResult, String> {
-    let api_key = match configured_api_key() {
+    let provider = args.provider.clone().unwrap_or_else(|| "xai".to_string());
+
+    let env_name = match generation_key_env(&provider) {
+        Some(env) => env,
+        None => {
+            return Ok(GenerateResult::Err(ErrorResult {
+                error: format!("Unknown provider '{provider}'."),
+            }))
+        }
+    };
+
+    let api_key = match configured_api_key_for(env_name) {
         Some(key) => key,
         None => {
             return Ok(GenerateResult::Err(ErrorResult {
-                error: "API key not configured. Add it in Settings.".into(),
+                error: "API key not configured for this model. Add it in Settings.".into(),
             }))
         }
     };
@@ -778,6 +1028,27 @@ async fn generate_image(
             error: "Prompt is required.".into(),
         }));
     }
+
+    // Edit models (FLUX.1 Kontext) need a source image; read it up-front so a
+    // missing/unreadable image fails clearly before we mark a generation in progress.
+    let input_image_b64 = if provider == "flux-kontext" {
+        let paths = app_paths(&app)?;
+        match args
+            .input_image
+            .as_ref()
+            .and_then(|payload| read_image_payload(payload, &paths).ok())
+        {
+            Some(bytes) => Some(general_purpose::STANDARD.encode(&bytes)),
+            None => {
+                return Ok(GenerateResult::Err(ErrorResult {
+                    error: "FLUX.1 Kontext needs a source image — open an image and choose Edit."
+                        .into(),
+                }))
+            }
+        }
+    } else {
+        None
+    };
 
     let (cancel_tx, cancel_rx) = oneshot::channel();
     {
@@ -803,48 +1074,52 @@ async fn generate_image(
     {
         Ok(client) => client,
         Err(error) => {
+            if let Ok(mut current) = state.current_generation.lock() {
+                *current = None;
+            }
             return Ok(GenerateResult::Err(ErrorResult {
                 error: error.to_string(),
-            }))
+            }));
         }
     };
 
-    let request = client
-        .post(format!("{API_BASE}/images/generations"))
-        .bearer_auth(api_key)
-        .json(&json!({
-            "model": IMAGE_MODEL,
-            "prompt": prompt,
-            "n": sanitize_count(args.n),
-            "response_format": "b64_json"
-        }))
-        .send();
+    let n = sanitize_count(args.n);
+    let generation = async {
+        match provider.as_str() {
+            "xai" => xai_generate(&client, &api_key, &prompt, n).await,
+            "google" => gemini_generate(&client, &api_key, &prompt).await,
+            "flux-pro" => {
+                bfl_generate(
+                    &client,
+                    &api_key,
+                    BFL_FLUX_PRO_PATH,
+                    json!({ "prompt": prompt.clone(), "output_format": "png" }),
+                )
+                .await
+            }
+            "flux-kontext" => {
+                bfl_generate(
+                    &client,
+                    &api_key,
+                    BFL_KONTEXT_PATH,
+                    json!({
+                        "prompt": prompt.clone(),
+                        "input_image": input_image_b64.clone().unwrap_or_default(),
+                        "output_format": "png"
+                    }),
+                )
+                .await
+            }
+            other => Err(format!("Unknown provider '{other}'.")),
+        }
+    };
 
     let result = tokio::select! {
         _ = cancel_rx => Err("cancelled".to_string()),
-        response = request => {
-            match response {
-                Ok(response) => {
-                    if !response.status().is_success() {
-                        let status = response.status();
-                        let body = response.text().await.unwrap_or_default();
-                        Err(format!("API error {status}: {body}"))
-                    } else {
-                        response.json::<XaiImageResponse>().await
-                            .map_err(|error| error.to_string())
-                            .and_then(|data| {
-                                let images = data.data.unwrap_or_default()
-                                    .into_iter()
-                                    .map(|image| format!("data:image/png;base64,{}", image.b64_json))
-                                    .collect::<Vec<_>>();
-                                save_gallery_images(&app, &images, &prompt)
-                                    .map(|saved| (images, saved))
-                            })
-                    }
-                }
-                Err(error) => Err(error.to_string()),
-            }
-        }
+        images = generation => match images {
+            Ok(images) => save_gallery_images(&app, &images, &prompt).map(|saved| (images, saved)),
+            Err(error) => Err(error),
+        },
     };
 
     if let Ok(mut current) = state.current_generation.lock() {

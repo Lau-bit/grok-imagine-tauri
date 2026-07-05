@@ -56,7 +56,7 @@
       <input type="checkbox" id="expand-borderless-edges">
       <span>Expand borderless edges by 2px</span>
     </label>
-    <div class="settings-menu-title settings-menu-title-spaced">API key</div>
+    <div class="settings-menu-title settings-menu-title-spaced">API keys</div>
     <div class="api-key-row" data-provider="xai">
       <div class="api-key-main">
         <span class="api-key-name">xAI</span>
@@ -68,11 +68,45 @@
         <button class="api-key-remove" data-provider="xai">Remove</button>
       </div>
     </div>
+    <div class="api-key-row" data-provider="google">
+      <div class="api-key-main">
+        <span class="api-key-name">Google (Gemini)</span>
+        <span class="api-key-status" id="google-key-status">Not set</span>
+      </div>
+      <div class="api-key-controls">
+        <input type="password" id="google-key-input" placeholder="API key" autocomplete="off" spellcheck="false">
+        <button class="api-key-save" data-provider="google">Save</button>
+        <button class="api-key-remove" data-provider="google">Remove</button>
+      </div>
+    </div>
+    <div class="api-key-row" data-provider="bfl">
+      <div class="api-key-main">
+        <span class="api-key-name">Black Forest Labs</span>
+        <span class="api-key-status" id="bfl-key-status">Not set</span>
+      </div>
+      <div class="api-key-controls">
+        <input type="password" id="bfl-key-input" placeholder="API key" autocomplete="off" spellcheck="false">
+        <button class="api-key-save" data-provider="bfl">Save</button>
+        <button class="api-key-remove" data-provider="bfl">Remove</button>
+      </div>
+    </div>
   </div>
 
   <div class="prompt-section">
+    <div class="edit-source hidden" id="edit-source">
+      <img id="edit-source-thumb" alt="" aria-hidden="true">
+      <span class="edit-source-label">Editing this image with FLUX.1 Kontext</span>
+      <button id="edit-source-clear" class="edit-source-clear" type="button" title="Clear edit image" aria-label="Clear edit image">&#10005;</button>
+    </div>
     <textarea id="prompt" placeholder="Describe the image you want to generate…" spellcheck="false"></textarea>
     <div class="controls-row">
+      <label class="control-label" for="provider">Model</label>
+      <select id="provider">
+        <option value="xai" selected>Grok Imagine (xAI)</option>
+        <option value="google">Nano Banana (Gemini)</option>
+        <option value="flux-pro">FLUX1.1 [pro]</option>
+        <option value="flux-kontext">FLUX.1 Kontext (edit)</option>
+      </select>
       <label class="control-label" for="count">Images</label>
       <select id="count">
         <option value="1" selected>1</option>
@@ -143,6 +177,7 @@
       <button id="lightbox-display-save" class="btn-secondary">Save to display gallery</button>
       <button id="lightbox-save" class="btn-secondary">Save to file</button>
       <button id="lightbox-copy" class="btn-secondary">Copy to clipboard</button>
+      <button id="lightbox-edit" class="btn-secondary">Edit (Kontext)</button>
       <button id="lightbox-fill" class="btn-secondary">Fill view</button>
     </div>
   </div>

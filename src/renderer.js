@@ -3,6 +3,10 @@
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const promptEl       = document.getElementById('prompt');
 const countEl        = document.getElementById('count');
+const providerEl     = document.getElementById('provider');
+const editSourceEl   = document.getElementById('edit-source');
+const editSourceThumb = document.getElementById('edit-source-thumb');
+const editSourceClear = document.getElementById('edit-source-clear');
 const btnGenerate    = document.getElementById('btn-generate');
 const btnCancel      = document.getElementById('btn-cancel');
 const btnArchive     = document.getElementById('btn-archive');
@@ -28,6 +32,7 @@ const lightboxImg    = document.getElementById('lightbox-img');
 const lightboxDisplaySave = document.getElementById('lightbox-display-save');
 const lightboxSave   = document.getElementById('lightbox-save');
 const lightboxCopy   = document.getElementById('lightbox-copy');
+const lightboxEdit   = document.getElementById('lightbox-edit');
 const lightboxFill   = document.getElementById('lightbox-fill');
 const lightboxPrev   = document.getElementById('lightbox-prev');
 const lightboxNext   = document.getElementById('lightbox-next');
@@ -51,6 +56,8 @@ const archiveConfirmBtn = document.getElementById('archive-confirm-btn');
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let generating     = false;
+let editSource     = null;  // { dataUrl, filePath, src } staged for FLUX.1 Kontext
+const PROVIDER_KEY = 'imageProvider';
 let lightboxDataUrl = null;
 let lightboxImages = [];
 let lightboxIndex  = -1;
@@ -104,6 +111,8 @@ async function init() {
     openLastDisplayedImageOnStartup();
   }
   if (fillView.classList.contains('hidden')) promptEl.focus();
+
+  initProvider();
 
   if (window.api.isPrimaryInstance) {
     window.api.isPrimaryInstance()
@@ -306,6 +315,14 @@ const apiKeyUi = {
   xai: {
     input: document.getElementById('xai-key-input'),
     status: document.getElementById('xai-key-status')
+  },
+  google: {
+    input: document.getElementById('google-key-input'),
+    status: document.getElementById('google-key-status')
+  },
+  bfl: {
+    input: document.getElementById('bfl-key-input'),
+    status: document.getElementById('bfl-key-status')
   }
 };
 
@@ -421,6 +438,55 @@ function toggleViewerMode() {
 
 viewerToggle.addEventListener('click', toggleViewerMode);
 
+// ── Provider / model selection ─────────────────────────────────────────────────
+function currentProvider() {
+  return providerEl.value || 'xai';
+}
+
+// xAI can batch up to 4 images per call; the others return a single image.
+function applyProviderUi() {
+  const provider = currentProvider();
+  const single = provider !== 'xai';
+  if (single) countEl.value = '1';
+  countEl.disabled = single || generating;
+  editSourceEl.classList.toggle('hidden', provider !== 'flux-kontext' || !editSource);
+  if (provider === 'flux-kontext' && !editSource) {
+    setStatus('Open an image and choose “Edit (Kontext)” to pick what to edit.', '');
+  }
+}
+
+function initProvider() {
+  const saved = localStorage.getItem(PROVIDER_KEY);
+  if (saved && [...providerEl.options].some(option => option.value === saved)) {
+    providerEl.value = saved;
+  }
+  applyProviderUi();
+}
+
+providerEl.addEventListener('change', () => {
+  localStorage.setItem(PROVIDER_KEY, currentProvider());
+  applyProviderUi();
+});
+
+// ── Edit source (FLUX.1 Kontext) ────────────────────────────────────────────────
+function setEditSource(image) {
+  const imageRef = normalizeImageRef(image);
+  if (!imageRef.src && !imageRef.dataUrl && !imageRef.filePath) return;
+  editSource = { dataUrl: imageRef.dataUrl || '', filePath: imageRef.filePath || '', src: imageRef.src };
+  editSourceThumb.src = imageRef.src || imageRef.dataUrl || '';
+  providerEl.value = 'flux-kontext';
+  localStorage.setItem(PROVIDER_KEY, 'flux-kontext');
+  applyProviderUi();
+}
+
+function clearEditSource() {
+  editSource = null;
+  editSourceThumb.removeAttribute('src');
+  applyProviderUi();
+}
+
+editSourceClear.addEventListener('click', clearEditSource);
+
 // ── Generate ──────────────────────────────────────────────────────────────────
 btnGenerate.addEventListener('click', generate);
 promptEl.addEventListener('keydown', e => {
@@ -431,14 +497,28 @@ async function generate() {
   const prompt = promptEl.value.trim();
   if (!prompt || generating) return;
 
-  const n = parseInt(countEl.value, 10);
+  const provider = currentProvider();
+  const n = provider === 'xai' ? parseInt(countEl.value, 10) : 1;
+
+  const args = { prompt, n, provider };
+  if (provider === 'flux-kontext') {
+    if (!editSource) {
+      setStatus('Pick an image to edit first — open an image and choose “Edit (Kontext)”.', 'error');
+      return;
+    }
+    // Omit empty fields so the backend falls through to the file path for gallery images.
+    args.inputImage = {
+      dataUrl: editSource.dataUrl || undefined,
+      filePath: editSource.filePath || undefined
+    };
+  }
 
   setGenerating(true);
   setStatus('Generating…', 'running');
   showTab('current');
   showSkeletons(n);
 
-  const result = await window.api.generateImage({ prompt, n });
+  const result = await window.api.generateImage(args);
 
   setGenerating(false);
 
@@ -479,7 +559,8 @@ function setGenerating(active) {
   btnGenerate.disabled = active;
   btnCancel.classList.toggle('hidden', !active);
   promptEl.disabled = active;
-  countEl.disabled  = active;
+  providerEl.disabled = active;
+  countEl.disabled  = active || currentProvider() !== 'xai';
 }
 
 function setStatus(text, type) {
@@ -1429,6 +1510,14 @@ lightboxCopy.addEventListener('click', async () => {
   if (!lightboxDataUrl) return;
   await copyImage(lightboxDataUrl);
   flash(lightboxCopy, 'Copied!', 'Copy to clipboard');
+});
+lightboxEdit.addEventListener('click', () => {
+  if (!lightboxDataUrl) return;
+  setEditSource(lightboxDataUrl);
+  closeLightbox();
+  showTab('current');
+  promptEl.focus();
+  setStatus('Editing image with FLUX.1 Kontext — describe your change and Generate.', '');
 });
 lightboxFill.addEventListener('click', () => openFillView());
 lightboxImg.addEventListener('dblclick', e => {
